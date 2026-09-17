@@ -1,4 +1,5 @@
 require("dotenv").config();
+
 const express = require("express");
 const http = require("http");
 const cors = require("cors");
@@ -26,31 +27,100 @@ const io = new Server(server, {
     }
 });
 
+// Track users inside each file
+const fileUsers = new Map();
+
 io.on("connection", (socket) => {
+
     const uid = socket.handshake.auth.uid;
-
-    console.log("User connected:", socket.id);
-    console.log("Firebase UID:", uid);
-
+    // Join file
     socket.on("join-file", (fileId) => {
+
         socket.join(fileId);
 
-        console.log(`${uid} joined file room: ${fileId}`);
+        // Create user map for this file
+        if (!fileUsers.has(fileId)) {
+            fileUsers.set(fileId, new Map());
+        }
+
+        const users = fileUsers.get(fileId);
+
+        // Store socket ID -> UID
+        users.set(socket.id, uid);
+
+        // Send current users to the newly joined user
+        socket.emit("file-users", {
+            users: Array.from(users.values())
+        });
+
+        // Tell everyone else that a new user joined
+        socket.to(fileId).emit("user-joined", {
+            uid
+        });
+
     });
 
+    // Live code changes
+    socket.on("code-change", (data) => {
+
+        socket.to(data.fileId).emit("code-update", {
+            content: data.content
+        });
+
+    });
+
+    // Leave file
     socket.on("leave-file", (fileId) => {
+
+        removeUserFromFile(socket, fileId);
+
         socket.leave(fileId);
 
         console.log(`${uid} left file room: ${fileId}`);
     });
 
+    // Browser/tab closed or connection lost
     socket.on("disconnect", () => {
-        console.log("User disconnected:", socket.id);
+
+        for (const [fileId, users] of fileUsers.entries()) {
+
+            if (users.has(socket.id)) {
+
+                removeUserFromFile(socket, fileId);
+
+            }
+        }
     });
 });
 
+// Remove user from file
+const removeUserFromFile = (socket, fileId) => {
+
+    const users = fileUsers.get(fileId);
+
+    if (!users) {
+        return;
+    }
+
+    const uid = users.get(socket.id);
+
+    users.delete(socket.id);
+
+    // Tell remaining users
+    socket.to(fileId).emit("user-left", {
+        uid
+    });
+
+    // Delete empty file room
+    if (users.size === 0) {
+        fileUsers.delete(fileId);
+    }
+};
+
 const startServer = async () => {
+
     try {
+
         await connectDB();
 
         server.listen(5000, () => {
@@ -58,7 +128,12 @@ const startServer = async () => {
         });
 
     } catch (error) {
-        console.log("Failed to connect to database:", error.message);
+
+        console.log(
+            "Failed to connect to database:",
+            error.message
+        );
+
     }
 };
 
